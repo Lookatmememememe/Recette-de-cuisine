@@ -136,6 +136,29 @@ form.add input,form.add textarea,form.add select{border:2px solid var(--line);ba
 form.add textarea{min-height:130px;resize:vertical}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 @media (max-width:480px){.row2{grid-template-columns:1fr}}
+@media (max-width:600px){
+  body{padding-inline:12px;padding-block:14px 60px;font-size:15px}
+  h1{font-size:30px}
+  .sub{font-size:14px}
+  header.top{margin-bottom:8px}
+  .actions{width:100%}
+  .actions .btn{flex:1 1 auto;justify-content:center;padding:10px 12px;min-height:44px}
+  .modes{gap:6px}
+  .mode{flex:1 1 auto;padding:10px 12px;min-height:44px}
+  #openList{margin-left:0}
+  .search input{padding:12px 14px;font-size:16px}
+  .chip{padding:8px 12px;min-height:40px}
+  .vegs .vchip{min-height:40px}
+  .cards{grid-template-columns:1fr}
+  .stall{padding:12px;border-radius:18px}
+  .stall h2{font-size:20px}
+  .sheet{padding:18px 14px 20px;border-radius:20px}
+  .sheet h2{font-size:22px;margin-right:44px}
+  .sheet .x{min-width:44px;min-height:44px}
+  .btn.main{min-height:44px}
+  .bar{flex-direction:column;align-items:stretch}
+  .bar .btn{min-height:44px}
+}
 .warn{background:var(--sauce-bg);color:var(--sauce-ink);padding:10px 12px;border-radius:12px;font-weight:700;font-size:14px}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
