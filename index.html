@@ -291,9 +291,12 @@ const EXTRA = [{"titre": "Pain au safran", "source": "livre de cuisine suisse (D
 const mkExtra = () => EXTRA.map((d,i)=>{ const r=prep({key:'x'+(i+1), n:'+', user:false, titre:d.titre, meta:[ (d.source||'Recette ajoutée')+'  ·  '+d.type, d.portions?('Pour '+d.portions):'' ].filter(Boolean), ing:d.ing, etapes:d.etapes}); r.type=d.type; return r; });
 let ALL = BASE.map(r=>prep({...r, key:'b'+r.n, user:false})).concat(mkExtra());
 let USERDOCS = [];
+const STORE_KEY='recettes_ajoutees';
+try{ const raw=JSON.parse(localStorage.getItem(STORE_KEY)||'[]'); if(Array.isArray(raw)) USERDOCS=raw; }catch(e){ USERDOCS=[]; }
+function saveUserDocs(){ try{ localStorage.setItem(STORE_KEY,JSON.stringify(USERDOCS)); return true; }catch(e){ return false; } }
 
 function rebuild(){
-  const u = USERDOCS.map(d=>prep({key:'u'+d.id, id:d.id, user:true, n:'+', titre:d.titre, meta:[ (d.source||'Ajoutée') +'  ·  '+(d.type||'Autre'), d.portions?('Pour '+d.portions):'' ].filter(Boolean), type:d.type||'Autre', ing:d.ing||[], etapes:d.etapes||[]}));
+  const u = USERDOCS.map(d=>{ const r=prep({key:'u'+d.id, id:d.id, user:true, n:'+', titre:d.titre, meta:[ (d.source||'Ajoutée') +'  ·  '+(d.type||'Autre'), d.portions?('Pour '+d.portions):'' ].filter(Boolean), type:d.type||'Autre', ing:d.ing||[], etapes:d.etapes||[]}); r.type=d.type||'Autre'; return r; });
   ALL = BASE.map(r=>prep({...r, key:'b'+r.n, user:false})).concat(mkExtra()).concat(u);
 }
 
@@ -435,13 +438,12 @@ function openSheet(r){
     ${r.user?`<p style="margin-top:18px"><button class="btn ghost" type="button" data-del="${esc(r.id)}">Supprimer cette recette</button></p>`:''}`;
   $('dlg').showModal();
 }
-let dbRef=null, canWrite=null;
 function openAdd(){
-  const types=['Plat','Entrée','Dessert','Accompagnement','Sauce ou base','Autre'];
+  const types=['Plat','Entrée','Viande','Poisson / fruits de mer','Salade','Dessert','Curry / soupe','Base / sauce','Finger food','Autre'];
   $('sheet').innerHTML=`<button class="btn ghost x" type="button" data-close>Fermer</button>
     <h2>Ajouter une recette</h2>
     <p class="meta">Un ingrédient par ligne. Une ligne avec « : » à la fin devient un intertitre (par exemple « Sauce : »).</p>
-    ${dbRef? '' : '<p class="warn">L\'ajout est indisponible dans cette vue. Ouvre la page depuis ton compte.</p>'}
+    <p class="meta">Les recettes que tu ajoutes sont enregistrées sur cet appareil (dans ce navigateur) : elles n'apparaissent pas sur tes autres appareils.</p>
     <form class="add" id="addForm">
       <label>Titre<input id="f_titre" required maxlength="140" autocomplete="off"></label>
       <div class="row2">
@@ -452,8 +454,8 @@ function openAdd(){
       <label>Ingrédients<textarea id="f_ing" required placeholder="200 g de saumon&#10;2 c. à soupe d'huile d'olive&#10;Sauce :&#10;1 citron"></textarea></label>
       <label>Préparation (une étape par ligne)<textarea id="f_etp" placeholder="Couper le saumon en dés.&#10;Cuire 3 minutes."></textarea></label>
       <div id="f_msg" class="meta" role="status"></div>
-      <button class="btn main" type="submit" ${dbRef?'':'disabled'}>Enregistrer</button>
-    </form>`;
+      <button class="btn main" type="submit">Enregistrer</button>
+    </form>${USERDOCS.length?`<p style="margin-top:14px"><button class="btn ghost" type="button" id="exportAdded">Copier mes ${USERDOCS.length} recette(s) ajoutée(s) (sauvegarde)</button></p>`:''}`;
   $('dlg').showModal();
 }
 
@@ -483,6 +485,7 @@ document.addEventListener('click',e=>{
   if(t.hasAttribute('data-close')){ $('dlg').close(); return; }
   if(t.dataset.del){ if(t.dataset.sure!=='1'){ t.dataset.sure='1'; t.textContent='Confirmer : supprimer définitivement'; return; } delRecipe(t.dataset.del); return; }
   if(t.id==='addBtn'){ openAdd(); return; }
+  if(t.id==='exportAdded'){ const txt=JSON.stringify(USERDOCS,null,1); (navigator.clipboard?navigator.clipboard.writeText(txt):Promise.reject()).then(()=>{ t.textContent='Copié. Colle-le dans un message ou un fichier pour le garder.'; }).catch(()=>{ t.textContent='Copie impossible sur cet appareil.'; }); return; }
   if(t.id==='dice'){
     t.classList.remove('rolling'); void t.offsetWidth; t.classList.add('rolling');
     const pool = sel.length ? current() : ALL; if(!pool.length) return;
@@ -502,34 +505,24 @@ $('q').addEventListener('keydown',e=>{
   const s = hit ? {kind:'id',v:hit.id} : {kind:'txt',v};
   if(!has(s)) sel.push(s); $('q').value=''; sauceFilter=null; render();
 });
-document.addEventListener('submit',async e=>{
+document.addEventListener('submit',e=>{
   if(e.target.id!=='addForm') return; e.preventDefault();
-  const msg=$('f_msg'); if(!dbRef){ msg.textContent='Enregistrement indisponible.'; return; }
+  const msg=$('f_msg');
   const lines=s=>s.split('\n').map(x=>x.trim()).filter(Boolean);
   const doc={titre:$('f_titre').value.trim(), type:$('f_type').value, source:$('f_src').value.trim(), portions:$('f_por').value.trim(),
     ing:lines($('f_ing').value).map(l=>/:$/.test(l)?l.replace(/:$/,''):l), etapes:lines($('f_etp').value), created:Date.now()};
   if(!doc.titre||!doc.ing.length){ msg.textContent='Il faut un titre et au moins un ingrédient.'; return; }
-  try{ await dbRef.add(doc); $('dlg').close(); }
-  catch(err){ msg.textContent = (err&&err.code==='invalid_argument') ? 'Tu n\'as pas le droit d\'ajouter ici.' : 'Enregistrement impossible pour le moment.'; }
+  doc.id='l'+doc.created.toString(36);
+  USERDOCS.push(doc);
+  if(!saveUserDocs()){ USERDOCS.pop(); msg.textContent='Enregistrement impossible : le navigateur refuse de garder les données (navigation privée ?).'; return; }
+  rebuild(); render(); $('dlg').close();
 });
-async function delRecipe(id){
-  if(!dbRef) return;
-  try{ await dbRef.doc(id).delete(); $('dlg').close(); }catch(err){}
+function delRecipe(id){
+  USERDOCS = USERDOCS.filter(d=>d.id!==id); saveUserDocs(); rebuild(); render(); $('dlg').close();
 }
 
-/* ---------- données partagées ---------- */
-render();
-(async()=>{
-  try{
-    const db = await claude.use('db');
-    if(!db) return;
-    dbRef = db.collection('recettes');
-    dbRef.onSnapshot(snap=>{
-      USERDOCS = snap.docs.map(d=>({id:d.id, ...d.data()})).sort((a,b)=>(a.created||0)-(b.created||0));
-      rebuild(); render();
-    }, ()=>{});
-  }catch(e){}
-})();
+/* ---------- démarrage ---------- */
+rebuild(); render();
 </script>
 
 
