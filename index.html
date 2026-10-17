@@ -370,6 +370,16 @@ async function addShared(c,doc,msg){
   mergeLists(); rebuild(); render();
   return true;
 }
+async function editShared(c,id,doc,msg){
+  msg.textContent='Enregistrement…';
+  const li=LOCAL[c].findIndex(d=>d.id===id);
+  if(li>=0){ const old=LOCAL[c][li]; LOCAL[c][li]=Object.assign({},doc,{id:old.id,created:old.created}); if(!saveLocal(c)){ LOCAL[c][li]=old; msg.textContent='Enregistrement impossible sur cet appareil.'; return false; } mergeLists(); rebuild(); render(); return true; }
+  let res=null; try{ res=await api('PUT',c,{id,body:{doc}}); }catch(e){}
+  if(res&&res.cancelled){ msg.textContent='Annulé : le code est nécessaire pour modifier.'; return false; }
+  if(res&&res.status===401){ msg.textContent='Code incorrect.'; return false; }
+  if(res&&res.ok){ await loadShared(); return true; }
+  msg.textContent='Modification impossible pour le moment.'; return false;
+}
 async function delShared(c,id,btn){
   const resetBtn=t=>{ if(btn){ btn.dataset.sure=''; btn.textContent=t; } };
   if(LOCAL[c].some(d=>d.id===id)){ LOCAL[c]=LOCAL[c].filter(d=>d.id!==id); saveLocal(c); mergeLists(); rebuild(); render(); $('dlg').close(); return; }
@@ -551,24 +561,26 @@ function openSheet(r){
     <h3>Ingrédients</h3><ul>${ing}</ul>
     <h3>Préparation</h3><ol>${steps}</ol>
     <p style="margin-top:14px"><button class="btn main" type="button" data-addrecipe="${esc(r.key)}">Ajouter à ma liste de courses</button></p>
-    ${r.user?`<p style="margin-top:18px"><button class="btn ghost" type="button" data-del="${esc(r.id)}">Supprimer cette recette</button></p>`:''}`;
+    ${r.user?`<p style="margin-top:18px"><button class="btn ghost" type="button" data-edit="${esc(r.id)}">Modifier cette recette</button> <button class="btn ghost" type="button" data-del="${esc(r.id)}">Supprimer cette recette</button></p>`:''}`;
   $('dlg').showModal();
 }
-function openAdd(){
+let EDIT=null;
+function openAdd(d){
+  EDIT=d||null; const v=d||{};
   const types=['Plat','Entrée','Viande','Poisson / fruits de mer','Salade','Dessert','Curry / soupe','Base / sauce','Finger food','Autre'];
   $('sheet').innerHTML=`<button class="btn ghost x" type="button" data-close>Fermer</button>
-    <h2>Ajouter une recette</h2>
+    <h2>${EDIT?'Modifier la recette':'Ajouter une recette'}</h2>
     <p class="meta">Un ingrédient par ligne. Une ligne avec « : » à la fin devient un intertitre (par exemple « Sauce : »).</p>
     <p class="meta">${SERVER_OK?'Les recettes ajoutées sont partagées : tout le monde les voit. Le code de partage te sera demandé.':'Le partage n\'est pas disponible pour le moment : la recette sera enregistrée sur cet appareil (dans ce navigateur) seulement.'}</p>
     <form class="add" id="addForm">
-      <label>Titre<input id="f_titre" required maxlength="140" autocomplete="off"></label>
+      <label>Titre<input id="f_titre" required maxlength="140" autocomplete="off" value="${esc(v.titre||'')}"></label>
       <div class="row2">
-        <label>Type<select id="f_type">${types.map(t=>`<option>${t}</option>`).join('')}</select></label>
-        <label>Source (livre, page)<input id="f_src" maxlength="140" autocomplete="off"></label>
+        <label>Type<select id="f_type">${types.map(t=>`<option${t===v.type?' selected':''}>${t}</option>`).join('')}</select></label>
+        <label>Source (livre, page)<input id="f_src" maxlength="140" autocomplete="off" value="${esc(v.source||'')}"></label>
       </div>
-      <label>Pour combien de personnes ?<input id="f_por" inputmode="numeric" maxlength="3" autocomplete="off"></label>
-      <label>Ingrédients<textarea id="f_ing" required placeholder="200 g de saumon&#10;2 c. à soupe d'huile d'olive&#10;Sauce :&#10;1 citron"></textarea></label>
-      <label>Préparation (une étape par ligne)<textarea id="f_etp" placeholder="Couper le saumon en dés.&#10;Cuire 3 minutes."></textarea></label>
+      <label>Pour combien de personnes ?<input id="f_por" inputmode="numeric" maxlength="3" autocomplete="off" value="${esc(v.portions||'')}"></label>
+      <label>Ingrédients<textarea id="f_ing" required placeholder="200 g de saumon&#10;2 c. à soupe d'huile d'olive&#10;Sauce :&#10;1 citron">${esc((v.ing||[]).map(l=>isHeader(l)?l+' :':l).join('\n'))}</textarea></label>
+      <label>Préparation (une étape par ligne)<textarea id="f_etp" placeholder="Couper le saumon en dés.&#10;Cuire 3 minutes.">${esc((v.etapes||[]).join('\n'))}</textarea></label>
       <div id="f_msg" class="meta" role="status"></div>
       <button class="btn main" type="submit">Enregistrer</button>
     </form>${LOCAL.recettes.length?`<p style="margin-top:14px"><button class="btn ghost" type="button" id="exportAdded">Copier mes ${LOCAL.recettes.length} recette(s) enregistrée(s) sur cet appareil (sauvegarde)</button></p>`:''}`;
@@ -604,6 +616,7 @@ document.addEventListener('click',e=>{
   if(t.dataset.k){ const r=ALL.find(x=>x.key===t.dataset.k); if(r) openSheet(r); return; }
   if(t.hasAttribute('data-close')){ $('dlg').close(); return; }
   if(t.dataset.del){ if(t.dataset.sure!=='1'){ t.dataset.sure='1'; t.textContent='Confirmer : supprimer définitivement'; return; } delRecipe(t.dataset.del,t); return; }
+  if(t.dataset.edit){ const d=USERDOCS.find(x=>x.id===t.dataset.edit); if(d) openAdd(d); return; }
   if(t.id==='addBtn'){ openAdd(); return; }
   if(t.id==='exportAdded'){ const txt=JSON.stringify(LOCAL.recettes,null,1); (navigator.clipboard?navigator.clipboard.writeText(txt):Promise.reject()).then(()=>{ t.textContent='Copié. Colle-le dans un message ou un fichier pour le garder.'; }).catch(()=>{ t.textContent='Copie impossible sur cet appareil.'; }); return; }
   if(t.id==='dice'){
@@ -640,6 +653,7 @@ document.addEventListener('submit',async e=>{
   const doc={titre:$('f_titre').value.trim(), type:$('f_type').value, source:$('f_src').value.trim(), portions:$('f_por').value.trim(),
     ing:lines($('f_ing').value).map(l=>/:$/.test(l)?l.replace(/:$/,''):l), etapes:lines($('f_etp').value)};
   if(!doc.titre||!doc.ing.length){ msg.textContent='Il faut un titre et au moins un ingrédient.'; return; }
+  if(EDIT){ if(await editShared('recettes',EDIT.id,doc,msg)) $('dlg').close(); return; }
   if(await addShared('recettes',doc,msg)) $('dlg').close();
 });
 function delRecipe(id,btn){ delShared('recettes',id,btn); }

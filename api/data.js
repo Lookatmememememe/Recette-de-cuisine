@@ -56,7 +56,7 @@ module.exports = async (req, res) => {
       return res.status(200).json({ docs });
     }
 
-    if (req.method === 'POST' || req.method === 'DELETE') {
+    if (req.method === 'POST' || req.method === 'DELETE' || req.method === 'PUT') {
       if (!process.env.CODE_PARTAGE) return res.status(503).json({ error: 'code de partage non configuré' });
       if (!codeOk(req.headers['x-code'])) {
         await new Promise(r => setTimeout(r, 800));
@@ -84,11 +84,26 @@ module.exports = async (req, res) => {
       const r = await list({ prefix: PREFIX[c] + id + '.json', limit: 5 });
       const hit = r.blobs.find(b => b.pathname === PREFIX[c] + id + '.json');
       if (!hit) return res.status(404).json({ error: 'introuvable' });
+
+      if (req.method === 'PUT') {
+        // modification : nouveau document (nouvel id, même date de création), puis suppression de l'ancien
+        const body = await readBody(req);
+        const doc = cleanDoc(c, body.doc);
+        if (!doc) return res.status(400).json({ error: 'document invalide' });
+        let created = Date.now();
+        try { const old = await (await fetch(hit.url)).json(); if (old && old.created) created = old.created; } catch (e) {}
+        doc.created = created;
+        doc.id = 's' + Date.now().toString(36) + crypto.randomBytes(3).toString('hex');
+        await put(PREFIX[c] + doc.id + '.json', JSON.stringify(doc), { access: 'public', addRandomSuffix: false, contentType: 'application/json' });
+        await del(hit.url);
+        return res.status(200).json({ ok: true, id: doc.id });
+      }
+
       await del(hit.url);
       return res.status(200).json({ ok: true });
     }
 
-    res.setHeader('Allow', 'GET, POST, DELETE');
+    res.setHeader('Allow', 'GET, POST, PUT, DELETE');
     return res.status(405).json({ error: 'méthode non autorisée' });
   } catch (e) {
     return res.status(500).json({ error: String((e && e.message) || e).slice(0, 200) });
