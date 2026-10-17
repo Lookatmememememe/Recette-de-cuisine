@@ -296,13 +296,89 @@ const mkExtra = () => EXTRA.map((d,i)=>{ const r=prep({key:'x'+(i+1), n:'+', use
 let ALL = BASE.map(r=>prep({...r, key:'b'+r.n, user:false})).concat(mkExtra());
 const REPAS = [{"id": "r1", "titre": "Repas pour 4 invités", "date": "", "invites": "4", "plats": [{"nom": "Crozets aux oignons et lardons", "detail": "Pour 4 : au moins 600 g de crozets, presque 1 kg d'oignons, 500 g de lardons."}, {"nom": "Apéro : chou-fleur, grenade et poulet au curry", "detail": "Poulet cuit simplement avec du curry. Quelques feuilles de roquette ajoutées. Sauce versée dessus : 1 citron entier (jus), sauce soja et un peu d'huile de sésame."}, {"nom": "Courge rôtie, ricotta et romarin", "detail": "Courge coupée en petits dés, 45 min au four. Ricotta au fond du plat, poivre, courge, romarin. Chapelure moulue maison parsemée dessus.", "note": "Il manquait quelque chose de croquant."}, {"nom": "Crevettes, pamplemousse et noix de cajou", "detail": "Crevettes avec une sauce soja et sauce de poisson."}, {"nom": "Mochi du Junes", "detail": "Pâte à mochi, glace, sésame, cacahuètes écrasées et chocolat chaud.", "note": "Pâte très difficile à étaler, même avec de la maïzena.", "recette": "Mochi du Junes"}]}];
 let USERREPAS = [];
-const REPAS_KEY='repas_invites';
-try{ const rr=JSON.parse(localStorage.getItem(REPAS_KEY)||'[]'); if(Array.isArray(rr)) USERREPAS=rr; }catch(e){ USERREPAS=[]; }
-function saveRepas(){ try{ localStorage.setItem(REPAS_KEY,JSON.stringify(USERREPAS)); return true; }catch(e){ return false; } }
 let USERDOCS = [];
-const STORE_KEY='recettes_ajoutees';
-try{ const raw=JSON.parse(localStorage.getItem(STORE_KEY)||'[]'); if(Array.isArray(raw)) USERDOCS=raw; }catch(e){ USERDOCS=[]; }
-function saveUserDocs(){ try{ localStorage.setItem(STORE_KEY,JSON.stringify(USERDOCS)); return true; }catch(e){ return false; } }
+/* ---------- partage : serveur (Vercel Blob) + sauvegarde locale de secours ---------- */
+const COLS={recettes:'recettes_ajoutees', repas:'repas_invites'};
+const SHARED={recettes:[], repas:[]};   // documents partagés (serveur)
+const LOCAL={recettes:[], repas:[]};    // documents enregistrés seulement sur cet appareil
+for(const c in COLS){
+  try{ const v=JSON.parse(localStorage.getItem(COLS[c])||'[]'); if(Array.isArray(v)) LOCAL[c]=v; }catch(e){}
+  try{ const v=JSON.parse(localStorage.getItem('cache_'+c)||'[]'); if(Array.isArray(v)) SHARED[c]=v; }catch(e){}
+}
+let SERVER_OK=false;
+const CODE_KEY='code_partage';
+function saveLocal(c){ try{ localStorage.setItem(COLS[c],JSON.stringify(LOCAL[c])); return true; }catch(e){ return false; } }
+function mergeLists(){
+  const ids=a=>new Set(a.map(d=>d.id));
+  const r=ids(SHARED.recettes), m=ids(SHARED.repas);
+  USERDOCS=SHARED.recettes.concat(LOCAL.recettes.filter(d=>!r.has(d.id)));
+  USERREPAS=SHARED.repas.concat(LOCAL.repas.filter(d=>!m.has(d.id)));
+}
+function storedCode(){ try{ return localStorage.getItem(CODE_KEY)||''; }catch(e){ return ''; } }
+function askCode(msg){ return (window.prompt(msg||'Code de partage :')||'').trim(); }
+async function api(method,c,opt){
+  opt=opt||{};
+  let code='';
+  if(method!=='GET'){ code=storedCode() || (opt.silent?'':askCode('Code de partage (pour ajouter ou supprimer) :')); if(!code) return {cancelled:true}; }
+  for(let attempt=0;attempt<2;attempt++){
+    const headers={'content-type':'application/json'}; if(code) headers['x-code']=code;
+    const r=await fetch('/api/data?c='+c+(opt.id?'&id='+encodeURIComponent(opt.id):''),{method,cache:'no-store',headers,body:opt.body?JSON.stringify(opt.body):undefined});
+    if(r.status===401){
+      try{ localStorage.removeItem(CODE_KEY); }catch(e){}
+      if(opt.silent) return {status:401};
+      if(attempt===0){ code=askCode('Code incorrect. Réessaie :'); if(!code) return {cancelled:true}; continue; }
+      return {status:401};
+    }
+    let j=null; try{ j=await r.json(); }catch(e){}
+    if(r.ok && code){ try{ localStorage.setItem(CODE_KEY,code); }catch(e){} }
+    return {ok:r.ok,status:r.status,json:j};
+  }
+}
+async function loadShared(){
+  let ok=false;
+  for(const c of ['recettes','repas']){
+    try{
+      const r=await fetch('/api/data?c='+c,{cache:'no-store'}); if(!r.ok) throw new Error('http');
+      const j=await r.json(); if(!Array.isArray(j.docs)) throw new Error('format');
+      SHARED[c]=j.docs; try{ localStorage.setItem('cache_'+c,JSON.stringify(j.docs)); }catch(e){}
+      ok=true;
+    }catch(e){}
+  }
+  SERVER_OK=ok; mergeLists(); rebuild(); render();
+  if(ok) syncLocal();
+}
+async function syncLocal(){
+  if(!storedCode()) return;
+  let changed=false;
+  for(const c of ['recettes','repas']){
+    if(!LOCAL[c].length) continue;
+    const r=await api('POST',c,{body:{docs:LOCAL[c]},silent:true});
+    if(r&&r.ok){ LOCAL[c]=[]; saveLocal(c); changed=true; }
+  }
+  if(changed) loadShared();
+}
+async function addShared(c,doc,msg){
+  msg.textContent='Enregistrement…';
+  let res=null;
+  if(SERVER_OK){ try{ res=await api('POST',c,{body:{doc}}); }catch(e){ res=null; } }
+  if(res&&res.cancelled){ msg.textContent='Annulé : le code est nécessaire pour ajouter.'; return false; }
+  if(res&&res.status===401){ msg.textContent='Code incorrect.'; return false; }
+  if(res&&res.ok){ await loadShared(); return true; }
+  doc.created=Date.now(); doc.id='l'+doc.created.toString(36);
+  LOCAL[c].push(doc);
+  if(!saveLocal(c)){ LOCAL[c].pop(); msg.textContent='Enregistrement impossible : le navigateur refuse de garder les données (navigation privée ?).'; return false; }
+  mergeLists(); rebuild(); render();
+  return true;
+}
+async function delShared(c,id,btn){
+  const resetBtn=t=>{ if(btn){ btn.dataset.sure=''; btn.textContent=t; } };
+  if(LOCAL[c].some(d=>d.id===id)){ LOCAL[c]=LOCAL[c].filter(d=>d.id!==id); saveLocal(c); mergeLists(); rebuild(); render(); $('dlg').close(); return; }
+  let res=null; try{ res=await api('DELETE',c,{id}); }catch(e){}
+  if(res&&res.ok){ await loadShared(); $('dlg').close(); }
+  else if(res&&res.cancelled){ resetBtn('Supprimer (code nécessaire)'); }
+  else if(res&&res.status===401){ resetBtn('Code incorrect : supprimer de nouveau'); }
+  else resetBtn('Suppression impossible pour le moment');
+}
 
 function rebuild(){
   const u = USERDOCS.map(d=>{ const r=prep({key:'u'+d.id, id:d.id, user:true, n:'+', titre:d.titre, meta:[ (d.source||'Ajoutée') +'  ·  '+(d.type||'Autre'), d.portions?('Pour '+d.portions):'' ].filter(Boolean), type:d.type||'Autre', ing:d.ing||[], etapes:d.etapes||[]}); r.type=d.type||'Autre'; return r; });
@@ -396,7 +472,7 @@ function openMeal(m){
 }
 function openAddMeal(){
   $('sheet').innerHTML=`<button class="btn ghost x" type="button" data-close>Fermer</button><h2>Ajouter un repas d'invités</h2>
-    <p class="meta">Un plat par ligne, sous la forme « Nom du plat : détails » (quantités, sauce, ce qui a manqué). Les repas ajoutés sont enregistrés sur cet appareil (dans ce navigateur).</p>
+    <p class="meta">Un plat par ligne, sous la forme « Nom du plat : détails » (quantités, sauce, ce qui a manqué). ${SERVER_OK?'Les repas ajoutés sont partagés : le code de partage te sera demandé.':'Le partage n\'est pas disponible pour le moment : le repas sera enregistré sur cet appareil seulement.'}</p>
     <form class="add" id="mealForm">
       <label>Titre<input id="m_titre" required maxlength="140" autocomplete="off" placeholder="Dîner du 12 octobre"></label>
       <div class="row2"><label>Date<input id="m_date" maxlength="40" autocomplete="off" placeholder="facultatif"></label>
@@ -483,7 +559,7 @@ function openAdd(){
   $('sheet').innerHTML=`<button class="btn ghost x" type="button" data-close>Fermer</button>
     <h2>Ajouter une recette</h2>
     <p class="meta">Un ingrédient par ligne. Une ligne avec « : » à la fin devient un intertitre (par exemple « Sauce : »).</p>
-    <p class="meta">Les recettes que tu ajoutes sont enregistrées sur cet appareil (dans ce navigateur) : elles n'apparaissent pas sur tes autres appareils.</p>
+    <p class="meta">${SERVER_OK?'Les recettes ajoutées sont partagées : tout le monde les voit. Le code de partage te sera demandé.':'Le partage n\'est pas disponible pour le moment : la recette sera enregistrée sur cet appareil (dans ce navigateur) seulement.'}</p>
     <form class="add" id="addForm">
       <label>Titre<input id="f_titre" required maxlength="140" autocomplete="off"></label>
       <div class="row2">
@@ -495,7 +571,7 @@ function openAdd(){
       <label>Préparation (une étape par ligne)<textarea id="f_etp" placeholder="Couper le saumon en dés.&#10;Cuire 3 minutes."></textarea></label>
       <div id="f_msg" class="meta" role="status"></div>
       <button class="btn main" type="submit">Enregistrer</button>
-    </form>${USERDOCS.length?`<p style="margin-top:14px"><button class="btn ghost" type="button" id="exportAdded">Copier mes ${USERDOCS.length} recette(s) ajoutée(s) (sauvegarde)</button></p>`:''}`;
+    </form>${LOCAL.recettes.length?`<p style="margin-top:14px"><button class="btn ghost" type="button" id="exportAdded">Copier mes ${LOCAL.recettes.length} recette(s) enregistrée(s) sur cet appareil (sauvegarde)</button></p>`:''}`;
   $('dlg').showModal();
 }
 
@@ -524,12 +600,12 @@ document.addEventListener('click',e=>{
   if(t.dataset.meal){ const m=REPAS.concat(USERREPAS).find(x=>x.id===t.dataset.meal); if(m) openMeal(m); return; }
   if(t.dataset.openrec){ const r=ALL.find(x=>x.key===t.dataset.openrec); if(r) openSheet(r); return; }
   if(t.dataset.addmeal!==undefined){ openAddMeal(); return; }
-  if(t.dataset.mealdel){ if(t.dataset.sure!=='1'){ t.dataset.sure='1'; t.textContent='Confirmer : supprimer définitivement'; return; } USERREPAS=USERREPAS.filter(x=>x.id!==t.dataset.mealdel); saveRepas(); $('dlg').close(); render(); return; }
+  if(t.dataset.mealdel){ if(t.dataset.sure!=='1'){ t.dataset.sure='1'; t.textContent='Confirmer : supprimer définitivement'; return; } delShared('repas',t.dataset.mealdel,t); return; }
   if(t.dataset.k){ const r=ALL.find(x=>x.key===t.dataset.k); if(r) openSheet(r); return; }
   if(t.hasAttribute('data-close')){ $('dlg').close(); return; }
-  if(t.dataset.del){ if(t.dataset.sure!=='1'){ t.dataset.sure='1'; t.textContent='Confirmer : supprimer définitivement'; return; } delRecipe(t.dataset.del); return; }
+  if(t.dataset.del){ if(t.dataset.sure!=='1'){ t.dataset.sure='1'; t.textContent='Confirmer : supprimer définitivement'; return; } delRecipe(t.dataset.del,t); return; }
   if(t.id==='addBtn'){ openAdd(); return; }
-  if(t.id==='exportAdded'){ const txt=JSON.stringify(USERDOCS,null,1); (navigator.clipboard?navigator.clipboard.writeText(txt):Promise.reject()).then(()=>{ t.textContent='Copié. Colle-le dans un message ou un fichier pour le garder.'; }).catch(()=>{ t.textContent='Copie impossible sur cet appareil.'; }); return; }
+  if(t.id==='exportAdded'){ const txt=JSON.stringify(LOCAL.recettes,null,1); (navigator.clipboard?navigator.clipboard.writeText(txt):Promise.reject()).then(()=>{ t.textContent='Copié. Colle-le dans un message ou un fichier pour le garder.'; }).catch(()=>{ t.textContent='Copie impossible sur cet appareil.'; }); return; }
   if(t.id==='dice'){
     t.classList.remove('rolling'); void t.offsetWidth; t.classList.add('rolling');
     const pool = sel.length ? current() : ALL; if(!pool.length) return;
@@ -549,33 +625,27 @@ $('q').addEventListener('keydown',e=>{
   const s = hit ? {kind:'id',v:hit.id} : {kind:'txt',v};
   if(!has(s)) sel.push(s); $('q').value=''; sauceFilter=null; render();
 });
-document.addEventListener('submit',e=>{
+document.addEventListener('submit',async e=>{
   if(e.target.id==='mealForm'){
     e.preventDefault(); const msg=$('m_msg');
     const plats=$('m_plats').value.split('\n').map(x=>x.trim()).filter(Boolean).map(l=>{ const k=l.indexOf(':'); return k>0 ? {nom:l.slice(0,k).trim(), detail:l.slice(k+1).trim()} : {nom:l}; });
-    const m={id:'m'+Date.now().toString(36), titre:$('m_titre').value.trim(), date:$('m_date').value.trim(), invites:$('m_nb').value.trim(), plats, notes:$('m_notes').value.trim()};
+    const m={titre:$('m_titre').value.trim(), date:$('m_date').value.trim(), invites:$('m_nb').value.trim(), plats, notes:$('m_notes').value.trim()};
     if(!m.titre||!plats.length){ msg.textContent='Il faut un titre et au moins un plat.'; return; }
-    USERREPAS.push(m);
-    if(!saveRepas()){ USERREPAS.pop(); msg.textContent='Enregistrement impossible : le navigateur refuse de garder les données (navigation privée ?).'; return; }
-    $('dlg').close(); render(); return;
+    if(await addShared('repas',m,msg)) $('dlg').close();
+    return;
   }
   if(e.target.id!=='addForm') return; e.preventDefault();
   const msg=$('f_msg');
   const lines=s=>s.split('\n').map(x=>x.trim()).filter(Boolean);
   const doc={titre:$('f_titre').value.trim(), type:$('f_type').value, source:$('f_src').value.trim(), portions:$('f_por').value.trim(),
-    ing:lines($('f_ing').value).map(l=>/:$/.test(l)?l.replace(/:$/,''):l), etapes:lines($('f_etp').value), created:Date.now()};
+    ing:lines($('f_ing').value).map(l=>/:$/.test(l)?l.replace(/:$/,''):l), etapes:lines($('f_etp').value)};
   if(!doc.titre||!doc.ing.length){ msg.textContent='Il faut un titre et au moins un ingrédient.'; return; }
-  doc.id='l'+doc.created.toString(36);
-  USERDOCS.push(doc);
-  if(!saveUserDocs()){ USERDOCS.pop(); msg.textContent='Enregistrement impossible : le navigateur refuse de garder les données (navigation privée ?).'; return; }
-  rebuild(); render(); $('dlg').close();
+  if(await addShared('recettes',doc,msg)) $('dlg').close();
 });
-function delRecipe(id){
-  USERDOCS = USERDOCS.filter(d=>d.id!==id); saveUserDocs(); rebuild(); render(); $('dlg').close();
-}
+function delRecipe(id,btn){ delShared('recettes',id,btn); }
 
 /* ---------- démarrage ---------- */
-rebuild(); render();
+mergeLists(); rebuild(); render(); loadShared();
 </script>
 
 

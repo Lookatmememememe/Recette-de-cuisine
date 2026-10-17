@@ -1,0 +1,9 @@
+{
+  "name": "recette-de-cuisine",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Mes recettes pas à pas",
+  "dependencies": {
+    "@vercel/blob": "^2.8.2"
+  }
+}
